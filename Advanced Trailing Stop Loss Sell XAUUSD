@@ -1,0 +1,143 @@
+//+------------------------------------------------------------------+
+//|                                Advanced Trailing Stop Loss Sell.mq5 |
+//|                                                                    |
+//+------------------------------------------------------------------+
+#property copyright "Copyright 2025"
+#property version   "1.00"
+#property strict
+// Include the Trade.mqh file
+#include <Trade\Trade.mqh>
+// Create an instance of CTrade
+CTrade trade;
+// Global variables
+string _symbol;
+input double MaxSpreadPoints = 20;     // Maximum allowed spread in points
+input double TrailingStopPoints = 150; // Trailing stop distance in points
+input double TrailingStopStep = 10;    // Step to move the stop loss by
+input double InitialStopPoints = 500;  // Initial stop loss in points
+input double TakeProfitPoints = 1000;  // Take profit in points
+input double LotSize = 0.10;           // Position size
+//+------------------------------------------------------------------+
+//| Expert initialization function                                   |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   // Initialize global variables
+   _symbol = Symbol();
+   
+   // Set magic number for easier trade identification
+   trade.SetExpertMagicNumber(123456);
+   
+   Print("Expert initialized on symbol: ", _symbol);
+   return(INIT_SUCCEEDED);
+}
+//+------------------------------------------------------------------+
+//| Expert tick function                                             |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   // Get the ask price and bid price
+   double ask = NormalizeDouble(SymbolInfoDouble(_symbol, SYMBOL_ASK), Digits());
+   double bid = NormalizeDouble(SymbolInfoDouble(_symbol, SYMBOL_BID), Digits());
+   double point = Point();
+   
+   // Calculate spread in points
+   double spreadPoints = (ask - bid) / point;
+   
+   // Check if spread is too wide
+   if(spreadPoints > MaxSpreadPoints)
+   {
+      // Spread is too wide - skip trading
+      Print("Current spread (", spreadPoints, " points) exceeds maximum allowed (", MaxSpreadPoints, " points)");
+      return;
+   }
+   
+   // Check if we have any open positions for this symbol
+   int positions = CountPositions();
+   
+   // If we have less than 2 positions
+   if(positions < 2)
+   {
+      // Open a sell position with initial stop loss and take profit
+      double stopLoss = NormalizeDouble(bid + InitialStopPoints * point, Digits());
+      double takeProfit = NormalizeDouble(bid - TakeProfitPoints * point, Digits());
+      
+      if(trade.Sell(LotSize, _symbol, bid, stopLoss, takeProfit, "Sell Order"))
+      {
+         Print("Sell position opened successfully at price: ", bid);
+         Print("Stop Loss set at: ", stopLoss);
+         Print("Take Profit set at: ", takeProfit);
+      }
+      else
+      {
+         Print("Error opening sell position: ", GetLastError());
+      }
+   }
+   
+   // Update trailing stops for all positions
+   TrailStops(bid);
+}
+//+------------------------------------------------------------------+
+//| Count positions for current symbol                               |
+//+------------------------------------------------------------------+
+int CountPositions()
+{
+   int count = 0;
+   
+   for(int i = 0; i < PositionsTotal(); i++)
+   {
+      if(PositionGetSymbol(i) == _symbol)
+      {
+         count++;
+      }
+   }
+   
+   return count;
+}
+//+------------------------------------------------------------------+
+//| Trailing stop implementation for sell positions                  |
+//+------------------------------------------------------------------+
+void TrailStops(double currentBid)
+{
+   double point = Point();
+   
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      // Select the position
+      string positionSymbol = PositionGetSymbol(i);
+      
+      if(positionSymbol != _symbol)
+         continue;
+      
+      // Get position details
+      ulong ticket = PositionGetTicket(i);
+      int positionType = (int)PositionGetInteger(POSITION_TYPE);
+      double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double currentSL = PositionGetDouble(POSITION_SL);
+      double currentTP = PositionGetDouble(POSITION_TP);
+      
+      // Only process SELL positions
+      if(positionType == POSITION_TYPE_SELL)
+      {
+         // Calculate the price level for trailing stop
+         double newSL = NormalizeDouble(currentBid + TrailingStopPoints * point, Digits());
+         
+         // Check if position is in profit and if we should move the stop loss
+         // For a sell position, if the current bid is BELOW the open price, it's in profit
+         // AND if the new SL is BELOW the current SL (or there is no SL yet), we should move it
+         if(currentBid < openPrice && (newSL < currentSL || currentSL == 0))
+         {
+            // Move the stop loss down as price moves down (for sell positions)
+            if(trade.PositionModify(ticket, newSL, currentTP))
+            {
+               Print("Trailing stop updated for ticket #", ticket, " New SL: ", newSL);
+            }
+            else
+            {
+               Print("Error modifying position #", ticket, " Error code: ", GetLastError());
+            }
+         }
+      }
+   }
+}
+//+------------------------------------------------------------------+
